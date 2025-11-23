@@ -1,9 +1,42 @@
 {
-  "id": "e235b76a-f3a0-4a12-a017-70661c190498",
+  "id": "54728947-0657-4651-8d07-265b1a117a4d",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
+    "public.processing_status": {
+      "name": "processing_status",
+      "schema": "",
+      "columns": {
+        "network": {
+          "name": "network",
+          "type": "network",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "latest_processed_block": {
+          "name": "latest_processed_block",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {
+        "processing_status_network_pk": {
+          "name": "processing_status_network_pk",
+          "columns": [
+            "network"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.transfer": {
       "name": "transfer",
       "schema": "",
@@ -28,8 +61,7 @@
         },
         "status": {
           "name": "status",
-          "type": "transactionStatus",
-          "typeSchema": "public",
+          "type": "varchar",
           "primaryKey": false,
           "notNull": true
         },
@@ -41,6 +73,18 @@
         },
         "destinationTxHash": {
           "name": "destinationTxHash",
+          "type": "varchar",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "originChain": {
+          "name": "originChain",
+          "type": "varchar",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "destinationChain": {
+          "name": "destinationChain",
           "type": "varchar",
           "primaryKey": false,
           "notNull": false
@@ -82,8 +126,7 @@
       "schema": "public",
       "values": [
         "ethereum-mainnet",
-        "base-mainent",
-        "binance-mainnet"
+        "moonbeam"
       ]
     },
     "public.transactionStatus": {

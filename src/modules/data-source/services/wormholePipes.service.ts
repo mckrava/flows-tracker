@@ -5,60 +5,16 @@ import * as wormholeBridgeImplAbi from '../../../abi/generated/wormhole-bridge-i
 import * as genericErc20Abi from '../../../abi/generated/generic-erc-20';
 import { createTarget } from '@subsquid/pipes';
 import { AppConfig } from '../../config';
-import { drizzle } from 'drizzle-orm/node-postgres';
-import { Transfer, transferTable } from '../../../utils/drizzle/schemas';
-import {
-  chunk,
-  createDrizzleTarget,
-} from '@sqd-pipes/pipes/targets/drizzle/node-postgres';
-import { createNodeMetricsServer } from '@sqd-pipes/pipes/metrics/node';
+import { transferTable } from '../../../utils/drizzle/schemas';
 import { DrizzleService } from '../../drizzle/drizzle.service';
-
-type LogMessagePublishedEventDecorated = {
-  sequence: string;
-  destinationChain: string;
-  destinationContractAddress?: string;
-  senderAccountAddress: string;
-  destinationAccountAddress: string;
-};
-
-type TransferRedeemedEventDecorated = {
-  sequence: string;
-  emitterChainId: number;
-  senderAccountAddress: string;
-};
-
-enum Chain {
-  ETHEREUM = 'ethereum',
-  MOONBEAM = 'moonbeam',
-}
-
-type LogEventMetadata = {
-  block: {
-    chain: Chain;
-    number: number;
-    hash: string;
-    timestamp: number;
-  };
-  logIndex: number;
-  transactionIndex: number;
-  transactionHash: string;
-};
-
-type DecoratedEventWithMetadata<E extends { sequence: string }> = {
-  metadata: LogEventMetadata;
-  event: E;
-};
-
-type DecoratedEvents = {
-  logMessagePublishedEvents: DecoratedEventWithMetadata<LogMessagePublishedEventDecorated>[];
-  transferRedeemedRawEvents: DecoratedEventWithMetadata<TransferRedeemedEventDecorated>[];
-};
-export interface ParsedEventPayload {
-  destChainId: string;
-  destContractAddress: string;
-  destinationAccountAddress: string;
-}
+import {
+  Chain,
+  DecoratedEvents,
+  DecoratedEventWithMetadata,
+  LogMessagePublishedEventDecorated,
+  TransferRedeemedEventDecorated,
+} from './types';
+import { eq, inArray, and } from 'drizzle-orm';
 
 @Injectable()
 export class WormholePipesService implements OnApplicationBootstrap {
@@ -115,17 +71,17 @@ export class WormholePipesService implements OnApplicationBootstrap {
     })
       .pipeComposite(
         this.getEvmDecoders({
-          // from: 23_456_243,
-          // to: 23_849_715,
-          from: 23847481,
-          to: 23847481,
+          // TODO from value should be dynamic
+          from: 23_456_243,
+          // from: 23_847_481,
+          // to: 23_847_481,
           bridgeCoreContractAddress:
             '0x98f3c9e6E3fAce36bAAd05FE09d375Ef1464288B',
           bridgeImplContractAddress:
             '0xCafd2f0A35A4459fA40C0517e17e6fA2939441CA',
         }),
       )
-      .pipe((d, ctx) => {
+      .pipe((d) => {
         const msgPubEventsList: DecoratedEventWithMetadata<LogMessagePublishedEventDecorated>[] =
           [];
         const transferRedeamedEventsList: DecoratedEventWithMetadata<TransferRedeemedEventDecorated>[] =
@@ -204,16 +160,6 @@ export class WormholePipesService implements OnApplicationBootstrap {
           transferRedeemedRawEvents: transferRedeamedEventsList,
         };
       })
-      .pipe((d) => {
-        console.log('Ethereum');
-
-        if (d.logMessagePublishedEvents.length > 0)
-          console.dir(d.logMessagePublishedEvents, { depth: null });
-        if (d.transferRedeemedRawEvents.length > 0)
-          console.dir(d.transferRedeemedRawEvents, { depth: null });
-
-        return d;
-      })
       .pipeTo(
         createTarget({
           write: async ({ logger, read }) => {
@@ -231,10 +177,10 @@ export class WormholePipesService implements OnApplicationBootstrap {
     })
       .pipeComposite(
         this.getEvmDecoders({
-          // from: 12_444_110,
-          // to: 13_430_860,
-          from: 13427114,
-          to: 13427114,
+          // TODO from value should be dynamic
+          from: 12_754_110,
+          // from: 13_427_114,
+          // to: 13_427_114,
           bridgeCoreContractAddress:
             '0xC8e2b0cD52Cf01b0Ce87d389Daa3d414d4cE29f3',
           bridgeImplContractAddress:
@@ -330,14 +276,6 @@ export class WormholePipesService implements OnApplicationBootstrap {
           transferRedeemedRawEvents: transferRedeamedEventsList,
         };
       })
-      .pipe((d) => {
-        console.log('Moonbeam');
-        if (d.logMessagePublishedEvents.length > 0)
-          console.dir(d.logMessagePublishedEvents, { depth: null });
-        if (d.transferRedeemedRawEvents.length > 0)
-          console.dir(d.transferRedeemedRawEvents, { depth: null });
-        return d;
-      })
       .pipeTo(
         createTarget({
           write: async ({ logger, read }) => {
@@ -350,45 +288,104 @@ export class WormholePipesService implements OnApplicationBootstrap {
   }
 
   private async persistDecoratedData(data: DecoratedEvents) {
-    console.log(data);
+    await this.persistTransfersOnMessagePublishedEvent(
+      data.logMessagePublishedEvents,
+    );
+    await this.persistTransfersOnTransferRedeemedEvent(
+      data.transferRedeemedRawEvents,
+    );
+  }
 
-    for (const values of chunk(data.logMessagePublishedEvents)) {
-      const entities = values.map(
-        (i) =>
-          ({
-            sequence: i.event.sequence,
-            from: i.event.senderAccountAddress,
-            to: i.event.destinationAccountAddress,
-            status: 'pending',
-            originTxHash: i.metadata.transactionHash,
-            createdAt: new Date(i.metadata.block.timestamp),
-          }) as Transfer,
-      );
+  private async persistTransfersOnMessagePublishedEvent(
+    data: DecoratedEventWithMetadata<LogMessagePublishedEventDecorated>[],
+  ) {
+    const transfersOnPendingResp = await this.getTransfersOnPending(
+      data.map((t) => t.event.sequence),
+    );
+
+    const transferOnPendingToUpdate = new Map(
+      transfersOnPendingResp.map((t) => [t.sequence, t]),
+    );
+
+    for (const value of data) {
+      if (transferOnPendingToUpdate.has(value.event.sequence)) {
+        await this.drizzleService.db
+          .update(transferTable)
+          .set({
+            status: 'completed',
+            updatedAt: new Date(value.metadata.block.timestamp),
+            originTxHash: value.metadata.transactionHash,
+            destinationChain: value.event.destinationChain,
+          })
+          .where(eq(transferTable.sequence, value.event.sequence));
+        continue;
+      }
 
       await this.drizzleService.db
         .insert(transferTable)
-        .values(entities)
+        .values({
+          sequence: value.event.sequence,
+          from: value.event.senderAccountAddress,
+          to: value.event.destinationAccountAddress ?? '',
+          status: 'pending',
+          originTxHash: value.metadata.transactionHash,
+          destinationChain: value.event.destinationChain,
+          createdAt: new Date(value.metadata.block.timestamp),
+        })
         .returning();
     }
+  }
 
-    for (const values of chunk(data.transferRedeemedRawEvents)) {
-      const entities = values.map(
-        (i) =>
-          ({
-            sequence: i.event.sequence,
-            from: i.event.senderAccountAddress,
-            to: '',
-            status: 'pending',
-            originTxHash: i.metadata.transactionHash,
-            createdAt: new Date(i.metadata.block.timestamp),
-          }) as Transfer,
-      );
+  private async persistTransfersOnTransferRedeemedEvent(
+    data: DecoratedEventWithMetadata<TransferRedeemedEventDecorated>[],
+  ) {
+    const transferOnPendingResp = await this.getTransfersOnPending(
+      data.map((t) => t.event.sequence),
+    );
+
+    const transferOnPendingToUpdate = new Map(
+      transferOnPendingResp.map((t) => [t.sequence, t]),
+    );
+
+    for (const value of data) {
+      if (transferOnPendingToUpdate.has(value.event.sequence)) {
+        await this.drizzleService.db
+          .update(transferTable)
+          .set({
+            status: 'completed',
+            updatedAt: new Date(value.metadata.block.timestamp),
+            destinationTxHash: value.metadata.transactionHash,
+            originChain: (value.event.emitterChainId ?? 0).toString(),
+          })
+          .where(eq(transferTable.sequence, value.event.sequence));
+        continue;
+      }
 
       await this.drizzleService.db
         .insert(transferTable)
-        .values(entities)
+        .values({
+          sequence: value.event.sequence,
+          from: value.event.senderAccountAddress,
+          to: '',
+          status: 'pending',
+          originChain: (value.event.emitterChainId ?? 0).toString(),
+          destinationTxHash: value.metadata.transactionHash,
+          createdAt: new Date(value.metadata.block.timestamp),
+        })
         .returning();
     }
+  }
+
+  private async getTransfersOnPending(sequences: string[]) {
+    return this.drizzleService.db
+      .select()
+      .from(transferTable)
+      .where(
+        and(
+          eq(transferTable.status, 'pending'),
+          inArray(transferTable.sequence, sequences),
+        ),
+      );
   }
 
   private parseAdditionalPayloadEthereumEvent(payload: string) {

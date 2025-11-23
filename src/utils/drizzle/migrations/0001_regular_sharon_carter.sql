@@ -1,1 +1,0 @@
-ALTER TABLE "transfer" ALTER COLUMN "status" SET DATA TYPE varchar;
