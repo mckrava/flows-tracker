@@ -1,8 +1,8 @@
 {
   "name": "flows-tracker",
   "version": "0.0.1",
-  "description": "",
-  "author": "",
+  "description": "A NestJS application for tracking Wormhole cross-chain token transfers using Subsquid pipes.",
+  "author": "Max Kravchuk",
   "private": true,
   "license": "UNLICENSED",
   "scripts": {
