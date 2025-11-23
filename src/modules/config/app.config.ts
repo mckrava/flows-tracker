@@ -25,6 +25,10 @@ export class AppConfig {
   @IsString()
   readonly PORTAL_URL_ETHEREUM: string;
 
+  @IsNotEmpty()
+  @IsString()
+  readonly DB_CONNECTION_STR: string;
+
   static getInstance(): AppConfig {
     if (AppConfig.instance) return AppConfig.instance;
 

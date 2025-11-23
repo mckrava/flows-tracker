@@ -1,16 +1,18 @@
 import { Injectable, OnApplicationBootstrap } from '@nestjs/common';
-import {
-  evmDecoder,
-  EvmPortalData,
-  evmPortalSource,
-} from '@subsquid/pipes/evm';
-import { portalSqliteCache } from '@subsquid/pipes/portal-cache/node';
+import { evmDecoder, evmPortalSource } from '@subsquid/pipes/evm';
 import * as wormholeCoreBridgeAbi from '../../../abi/generated/wormhole-core-bridge';
 import * as wormholeBridgeImplAbi from '../../../abi/generated/wormhole-bridge-implementation';
 import * as genericErc20Abi from '../../../abi/generated/generic-erc-20';
-import { CompositePipe, createTarget } from '@subsquid/pipes';
+import { createTarget } from '@subsquid/pipes';
 import { AppConfig } from '../../config';
-import { BatchCtx } from '@sqd-pipes/pipes';
+import { drizzle } from 'drizzle-orm/node-postgres';
+import { Transfer, transferTable } from '../../../utils/drizzle/schemas';
+import {
+  chunk,
+  createDrizzleTarget,
+} from '@sqd-pipes/pipes/targets/drizzle/node-postgres';
+import { createNodeMetricsServer } from '@sqd-pipes/pipes/metrics/node';
+import { DrizzleService } from '../../drizzle/drizzle.service';
 
 type LogMessagePublishedEventDecorated = {
   sequence: string;
@@ -60,12 +62,13 @@ export interface ParsedEventPayload {
 
 @Injectable()
 export class WormholePipesService implements OnApplicationBootstrap {
-  constructor(public appConfig: AppConfig) {}
+  constructor(
+    public appConfig: AppConfig,
+    private drizzleService: DrizzleService,
+  ) {}
 
   onApplicationBootstrap() {
-    // This runs after the application has fully started
     console.log('Application has bootstrapped!');
-    // Add your initialization logic here
 
     this.runEthereumPipes().then();
     this.runMoonbeamPipes().then();
@@ -98,7 +101,6 @@ export class WormholePipesService implements OnApplicationBootstrap {
         range: { from, ...(to ? { to } : {}) },
       }),
       erc20: evmDecoder({
-        // contracts: [bridgeImplContractAddress], // ERC20: Transfer
         events: {
           transfer: genericErc20Abi.events.Transfer,
         },
@@ -209,13 +211,14 @@ export class WormholePipesService implements OnApplicationBootstrap {
           console.dir(d.logMessagePublishedEvents, { depth: null });
         if (d.transferRedeemedRawEvents.length > 0)
           console.dir(d.transferRedeemedRawEvents, { depth: null });
+
         return d;
       })
       .pipeTo(
         createTarget({
           write: async ({ logger, read }) => {
             for await (const { data } of read()) {
-              // logger.info({ data }, 'data');
+              await this.persistDecoratedData(data);
             }
           },
         }),
@@ -339,11 +342,53 @@ export class WormholePipesService implements OnApplicationBootstrap {
         createTarget({
           write: async ({ logger, read }) => {
             for await (const { data } of read()) {
-              // logger.info({ data }, 'data');
+              await this.persistDecoratedData(data);
             }
           },
         }),
       );
+  }
+
+  private async persistDecoratedData(data: DecoratedEvents) {
+    console.log(data);
+
+    for (const values of chunk(data.logMessagePublishedEvents)) {
+      const entities = values.map(
+        (i) =>
+          ({
+            sequence: i.event.sequence,
+            from: i.event.senderAccountAddress,
+            to: i.event.destinationAccountAddress,
+            status: 'pending',
+            originTxHash: i.metadata.transactionHash,
+            createdAt: new Date(i.metadata.block.timestamp),
+          }) as Transfer,
+      );
+
+      await this.drizzleService.db
+        .insert(transferTable)
+        .values(entities)
+        .returning();
+    }
+
+    for (const values of chunk(data.transferRedeemedRawEvents)) {
+      const entities = values.map(
+        (i) =>
+          ({
+            sequence: i.event.sequence,
+            from: i.event.senderAccountAddress,
+            to: '',
+            status: 'pending',
+            originTxHash: i.metadata.transactionHash,
+            createdAt: new Date(i.metadata.block.timestamp),
+          }) as Transfer,
+      );
+
+      await this.drizzleService.db
+        .insert(transferTable)
+        .values(entities)
+        .returning();
+    }
   }
 
   private parseAdditionalPayloadEthereumEvent(payload: string) {
