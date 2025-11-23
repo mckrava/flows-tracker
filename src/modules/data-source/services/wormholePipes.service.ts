@@ -1,18 +1,27 @@
 import { Injectable, OnApplicationBootstrap } from '@nestjs/common';
-import { evmDecoder, evmPortalSource } from '@subsquid/pipes/evm';
+import {
+  evmDecoder,
+  EvmPortalData,
+  evmPortalSource,
+} from '@subsquid/pipes/evm';
 import { portalSqliteCache } from '@subsquid/pipes/portal-cache/node';
-import * as wormholeCoreBridgeAbi from './abi/generated/wormhole-core-bridge';
-import * as wormholeBridgeImplAbi from './abi/generated/wormhole-bridge-implementation';
-import { createTarget } from '@subsquid/pipes';
+import * as wormholeCoreBridgeAbi from '../../../abi/generated/wormhole-core-bridge';
+import * as wormholeBridgeImplAbi from '../../../abi/generated/wormhole-bridge-implementation';
+import { CompositePipe, createTarget } from '@subsquid/pipes';
+import { AppConfig } from '../../config';
+import { BatchCtx } from '@sqd-pipes/pipes';
 
 @Injectable()
-export class WormholeEthereumPipesService implements OnApplicationBootstrap {
+export class WormholePipesService implements OnApplicationBootstrap {
+  constructor(public appConfig: AppConfig) {}
+
   onApplicationBootstrap() {
     // This runs after the application has fully started
     console.log('Application has bootstrapped!');
     // Add your initialization logic here
 
-    this.runPipes().then();
+    // this.runEthereumPipes().then();
+    this.runMoonbeamPipes().then();
   }
 
   private decodeWormholePayload(payloadHex: string) {
@@ -149,31 +158,50 @@ export class WormholeEthereumPipesService implements OnApplicationBootstrap {
     }
   }
 
-  async runPipes() {
+  private getEvmDecoders({
+    from,
+    to,
+    bridgeImplContractAddress,
+    bridgeCoreContractAddress,
+  }: {
+    from: number;
+    to?: number;
+    bridgeCoreContractAddress: string;
+    bridgeImplContractAddress: string;
+  }) {
+    return {
+      wormholeBridgeCore: evmDecoder({
+        contracts: [bridgeCoreContractAddress], // Wormhole: Wormhole Token Bridge Relayer
+        events: {
+          logMessagePublished: wormholeCoreBridgeAbi.events.LogMessagePublished,
+        },
+        range: { from, ...(to ? { to } : {}) },
+      }),
+      wormholeBridgeImplementation: evmDecoder({
+        contracts: [bridgeImplContractAddress], // Wormhole: Wormhole Token Bridge Implementation
+        events: {
+          transferRedeemed: wormholeBridgeImplAbi.events.TransferRedeemed,
+        },
+        range: { from, ...(to ? { to } : {}) },
+      }),
+    };
+  }
+
+  async runEthereumPipes() {
     await evmPortalSource({
-      portal: 'https://portal.sqd.dev/datasets/ethereum-mainnet',
+      portal: this.appConfig.PORTAL_URL_ETHEREUM,
     })
-      .pipeComposite({
-        wormholeBridgeCore: evmDecoder({
-          // profiler: { id: 'Decoding' },
-          // contracts: ['0xCafd2f0A35A4459fA40C0517e17e6fA2939441CA'], // Wormhole: Wormhole Token Bridge Relayer
-          contracts: ['0x98f3c9e6E3fAce36bAAd05FE09d375Ef1464288B'], // Wormhole: Wormhole Token Bridge Relayer
-          events: {
-            logMessagePublished:
-              wormholeCoreBridgeAbi.events.LogMessagePublished,
-          },
-          range: { from: 23_851_000 },
+      .pipeComposite(
+        this.getEvmDecoders({
+          from: 23_456_243,
+          to: 23_849_715,
+          bridgeCoreContractAddress:
+            '0x98f3c9e6E3fAce36bAAd05FE09d375Ef1464288B',
+          bridgeImplContractAddress:
+            '0xCafd2f0A35A4459fA40C0517e17e6fA2939441CA',
         }),
-        wormholeBridgeImplementation: evmDecoder({
-          contracts: ['0xCafd2f0A35A4459fA40C0517e17e6fA2939441CA'], // Wormhole: Wormhole Token Bridge Implementation
-          // contracts: ['0x3ee18B2214AFF97000D974cf647E7C347E8fa585'], // Wormhole: Wormhole Token Bridge Implementation
-          events: {
-            transferRedeemed: wormholeBridgeImplAbi.events.TransferRedeemed,
-          },
-          range: { from: 23_851_000 },
-        }),
-      })
-      .pipe((d) => {
+      )
+      .pipe((d, ctx) => {
         // TODO pipe should return parsed events
         return {
           logMessagePublishedEvents: d.wormholeBridgeCore.logMessagePublished,
@@ -182,8 +210,8 @@ export class WormholeEthereumPipesService implements OnApplicationBootstrap {
         };
       })
       .pipe((d) => {
-        // if (d.logMessagePublishedEvents.length > 0)
-        // console.dir(d.logMessagePublishedEvents, { depth: null });
+        if (d.logMessagePublishedEvents.length > 0)
+          console.dir(d.logMessagePublishedEvents, { depth: null });
         if (d.transferRedeemedRawEvents.length > 0)
           console.dir(d.transferRedeemedRawEvents, { depth: null });
         return d;
@@ -196,13 +224,47 @@ export class WormholeEthereumPipesService implements OnApplicationBootstrap {
             }
           },
         }),
-        // createTarget({
-        //   write: async ({ logger, read }) => {
-        //     for await (const { data } of read()) {
-        //       logger.info(`Got ${data.transfer.length} transfers`);
-        //     }
-        //   },
-        // }),
+      );
+  }
+
+  async runMoonbeamPipes() {
+    await evmPortalSource({
+      portal: this.appConfig.PORTAL_URL_MOONBEAM,
+    })
+      .pipeComposite(
+        this.getEvmDecoders({
+          // from: 13_444_110,
+          from: 12_444_110,
+          to: 13_430_860,
+          bridgeCoreContractAddress:
+            '0xC8e2b0cD52Cf01b0Ce87d389Daa3d414d4cE29f3',
+          bridgeImplContractAddress:
+            '0xB1731c586ca89a23809861c6103F0b96B3F57D92',
+        }),
+      )
+      .pipe((d, ctx) => {
+        // TODO pipe should return parsed events
+        return {
+          logMessagePublishedEvents: d.wormholeBridgeCore.logMessagePublished,
+          transferRedeemedRawEvents:
+            d.wormholeBridgeImplementation.transferRedeemed,
+        };
+      })
+      .pipe((d) => {
+        // if (d.logMessagePublishedEvents.length > 0)
+        //   console.dir(d.logMessagePublishedEvents, { depth: null });
+        if (d.transferRedeemedRawEvents.length > 0)
+          console.dir(d.transferRedeemedRawEvents, { depth: null });
+        return d;
+      })
+      .pipeTo(
+        createTarget({
+          write: async ({ logger, read }) => {
+            for await (const { data } of read()) {
+              // logger.info({ data }, 'data');
+            }
+          },
+        }),
       );
   }
 }
