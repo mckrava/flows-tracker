@@ -1,10 +1,10 @@
 import { Module } from '@nestjs/common';
 import { AppController } from './app.controller';
-import { EthereumMainnetPipesService} from './ethereumMainnetPipes.service';
+import { WormholeEthereumPipesService } from './wormholeEthereumPipes.service';
 
 @Module({
   imports: [],
   controllers: [AppController],
-  providers: [EthereumMainnetPipesService],
+  providers: [WormholeEthereumPipesService],
 })
 export class AppModule {}

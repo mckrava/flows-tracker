@@ -18,7 +18,7 @@
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "jest --config ./test/jest-e2e.json",
-    "abi:generate": "npx @subsquid/evm-typegen src/abi/generated src/abi/src/wormhole.json"
+    "abi:generate": "npx @subsquid/evm-typegen src/abi/generated src/abi/src/wormhole-core-bridge.json"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.1",

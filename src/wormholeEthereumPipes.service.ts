@@ -1,39 +1,12 @@
 import { Injectable, OnApplicationBootstrap } from '@nestjs/common';
-// import {
-//   commonAbis,
-//   createEvmDecoder,
-//   createEvmPortalSource,
-// } from '@sqd-pipes/pipes/evm';
-// import { clickhouseTarget } from '@subsquid/pipes/targets/clickhouse'
-// import { clickhouseTarget } from '@subsquid/pipes/targets/drizzle/node-postgres'
 import { evmDecoder, evmPortalSource } from '@subsquid/pipes/evm';
 import { portalSqliteCache } from '@subsquid/pipes/portal-cache/node';
-import * as wormholeAbi from './abi/generated/wormholeAbi';
+import * as wormholeCoreBridgeAbi from './abi/generated/wormhole-core-bridge';
+import * as wormholeBridgeImplAbi from './abi/generated/wormhole-bridge-implementation';
 import { createTarget } from '@subsquid/pipes';
-import {
-  bool,
-  _void,
-  str,
-  u8,
-  u32,
-  u128,
-  Struct,
-  Vector,
-  compact,
-  Tuple,
-  Codec,
-  u256,
-} from 'scale-ts';
-
-// const logMessagePublishedPayload = Struct({
-//   sourceChain: 6,
-//   orderSender: Vector(u32),
-//   redeemer: Vector(u32),
-//   redeemerMessage: new Uint8Array([0x01, 0x02, 0x03]),
-// });
 
 @Injectable()
-export class EthereumMainnetPipesService implements OnApplicationBootstrap {
+export class WormholeEthereumPipesService implements OnApplicationBootstrap {
   onApplicationBootstrap() {
     // This runs after the application has fully started
     console.log('Application has bootstrapped!');
@@ -67,7 +40,11 @@ export class EthereumMainnetPipesService implements OnApplicationBootstrap {
     if (payloadType === 1) {
       // Standard token transfer (101 bytes total)
       if (buffer.length < 101) {
-        return { error: 'Payload too short for type 1', payloadType, buffer: payloadHex };
+        return {
+          error: 'Payload too short for type 1',
+          payloadType,
+          buffer: payloadHex,
+        };
       }
 
       // Read amount (32 bytes)
@@ -112,7 +89,11 @@ export class EthereumMainnetPipesService implements OnApplicationBootstrap {
     } else if (payloadType === 3) {
       // Token transfer with payload (133+ bytes)
       if (buffer.length < 133) {
-        return { error: 'Payload too short for type 3', payloadType, buffer: payloadHex };
+        return {
+          error: 'Payload too short for type 3',
+          payloadType,
+          buffer: payloadHex,
+        };
       }
 
       // Read amount (32 bytes)
@@ -171,37 +152,41 @@ export class EthereumMainnetPipesService implements OnApplicationBootstrap {
   async runPipes() {
     await evmPortalSource({
       portal: 'https://portal.sqd.dev/datasets/ethereum-mainnet',
-      // cache: portalSqliteCache({
-      //   path: './evm-source.cache.sqlite',
-      // }),
     })
-      .pipe(
-        evmDecoder({
+      .pipeComposite({
+        wormholeBridgeCore: evmDecoder({
           // profiler: { id: 'Decoding' },
           // contracts: ['0xCafd2f0A35A4459fA40C0517e17e6fA2939441CA'], // Wormhole: Wormhole Token Bridge Relayer
           contracts: ['0x98f3c9e6E3fAce36bAAd05FE09d375Ef1464288B'], // Wormhole: Wormhole Token Bridge Relayer
           events: {
-            logMessagePublished: wormholeAbi.events.LogMessagePublished,
+            logMessagePublished:
+              wormholeCoreBridgeAbi.events.LogMessagePublished,
           },
           range: { from: 23_851_000 },
         }),
-      )
-      .pipe((d) => {
-        // console.log('pipe-----');
-        // console.dir(d, { depth: null });
-        // console.log(d);
-        return d.logMessagePublished;
+        wormholeBridgeImplementation: evmDecoder({
+          contracts: ['0xCafd2f0A35A4459fA40C0517e17e6fA2939441CA'], // Wormhole: Wormhole Token Bridge Implementation
+          // contracts: ['0x3ee18B2214AFF97000D974cf647E7C347E8fa585'], // Wormhole: Wormhole Token Bridge Implementation
+          events: {
+            transferRedeemed: wormholeBridgeImplAbi.events.TransferRedeemed,
+          },
+          range: { from: 23_851_000 },
+        }),
       })
       .pipe((d) => {
-        for (const { event } of d) {
-          console.log(
-            `event >>> sender ${event.sender} / ${event.sequence.toString()}`,
-          );
-          console.dir(this.decodeWormholePayload(event.payload), {
-            depth: null,
-          });
-        }
-        // return true;
+        // TODO pipe should return parsed events
+        return {
+          logMessagePublishedEvents: d.wormholeBridgeCore.logMessagePublished,
+          transferRedeemedRawEvents:
+            d.wormholeBridgeImplementation.transferRedeemed,
+        };
+      })
+      .pipe((d) => {
+        // if (d.logMessagePublishedEvents.length > 0)
+        // console.dir(d.logMessagePublishedEvents, { depth: null });
+        if (d.transferRedeemedRawEvents.length > 0)
+          console.dir(d.transferRedeemedRawEvents, { depth: null });
+        return d;
       })
       .pipeTo(
         createTarget({
